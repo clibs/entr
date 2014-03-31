@@ -1,13 +1,29 @@
-= Next Release: entr-2.8
+= Release History
+
+== 2.8: March 15, 2014
+
+ - Iteratively check for new file system events using a 1ms timeout after a file
+   has been renamed or removed in order to prevent the utility from being
+   executed before successive changes from a version control system have
+   completed.
+ - Regression tests are now system tests that depend on and use Vim and
+   Mercurial
+ - Timing on regression tests has been tightened to only support real hardware;
+   they are not expected to pass in emulated environments.
+ - More correctly identify the first file to trigger a file change notification
+ - Regression tests no longer require ksh
+ - Renamed regress.sh to system_test.sh
+
+== 2.7: February 12, 2014
 
  - Changed function pointer prefixes from '_' to 'x' to avoid runtime symbol
    collisions in libc. Required to build on DragonFlyBSD
  - Added this NEWS file to provide detailed release history for port maintainers
  - Using the argument '/_' on the command line is now replaced with the first
    file that changed
- - Man page formatted with more semanticlly correct markup
-
-= Release History
+ - Man page formatted with more semantically correct markup
+ - Multiple events on the same file are merged on Linux to prevent duplicate
+   writes to a named pipe
 
 == 2.6: January 23, 2014
 

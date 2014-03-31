@@ -65,7 +65,7 @@ void (*xfree)(void *);
 extern int optind;
 extern WatchFile **files;
 WatchFile fifo;
-WatchFile *changed;
+WatchFile *leading_edge;
 int restart_mode;
 int clear_mode;
 int child_pid;
@@ -78,7 +78,7 @@ static void handle_exit(int sig);
 static int process_input(FILE *, WatchFile *[], int);
 static int set_fifo(char *[]);
 static int set_options(char *[]);
-static void run_script(char *[]);
+static void run_utility(char *[]);
 static void watch_file(int, WatchFile *);
 static void watch_loop(int, char *[]);
 
@@ -115,7 +115,7 @@ main(int argc, char *argv[]) {
 	if (argc < 2) usage();
 	argv_index = set_options(argv);
 
-	/* normally a user will exit this utility by hitting Ctrl-C */
+	/* normally a user will exit this utility by do_execting Ctrl-C */
 	act.sa_flags = 0;
 	act.sa_handler = handle_exit;
 	if (sigemptyset(&act.sa_mask) & (sigaction(SIGINT, &act, NULL) != 0))
@@ -152,7 +152,7 @@ main(int argc, char *argv[]) {
 	/* FIFO mode will block until reader connects */
 	if (set_fifo(argv+argv_index));
 	else {
-		/* Attempt to open a tty so that editors such as ViM don't complain */
+		/* Attempt to open a tty so that editors don't complain */
 		if ((ttyfd = xopen(_PATH_TTY, O_RDONLY)) == -1)
 			warn("can't open %s", _PATH_TTY);
 		if (ttyfd > STDIN_FILENO) {
@@ -292,11 +292,11 @@ set_options(char *argv[]) {
  * then send the child process SIGTERM and restart it.
  */
 void
-run_script(char *argv[]) {
+run_utility(char *argv[]) {
 	int pid;
 	int i, m;
 	int ret, status;
-	struct timespec delay = { 0, 100 * 1000000 };
+	struct timespec delay = { 0, 1000000 };
 	char **new_argv;
 	char *p, *arg_buf;
 	int argc;
@@ -314,7 +314,7 @@ run_script(char *argv[]) {
 	for (m=0, i=0, p=arg_buf; i<argc; i++) {
 		new_argv[i] = p;
 		if ((m < 1) && (strcmp(argv[i], "/_")) == 0) {
-			p += strlen(xrealpath(changed->fn, p));
+			p += strlen(xrealpath(leading_edge->fn, p));
 			m++;
 		}
 		else
@@ -329,7 +329,7 @@ run_script(char *argv[]) {
 	if (pid == 0) {
 		if (clear_mode == 1)
 			system("/usr/bin/clear");
-		/* wait up to 1 second for each file to become available */
+		/* wait up to 1 seconds for each file to become available */
 		for (i=0; i < 10; i++) {
 			ret = xexecvp(new_argv[0], new_argv);
 			if (errno == ETXTBSY) nanosleep(&delay, NULL);
@@ -376,8 +376,17 @@ watch_file(int kq, WatchFile *file) {
 }
 
 /*
- * Wait for events to fire and execute a command or write filename to a FIFO. If
- * a file dissapears we'll spin waiting for it to reappear.
+ * Wait for events to and execute a command or write filename to a FIFO.
+ * Four major concerns are in play here:
+ *   leading_edge: Global reference to the first file to have changed
+ *   reopen_only : Unlink or rename events which require us to spin while
+ *                 waiting for the file to reappear. These must always be
+ *                 processed
+ *   collate_only: Changes that indicate that more events are likely to occur.
+ *                 Watch for more events using a short timeout
+ *   do_exec     : Delay execution until all events have been processed. Allow
+ *                 the user to edit files while the utility is running without
+ *                 any visible side-effects
  */
 void
 watch_loop(int kq, char *argv[]) {
@@ -388,17 +397,20 @@ watch_loop(int kq, char *argv[]) {
 	int i;
 	struct timespec evTimeout = { 0, 1000000 };
 	int reopen_only = 0;
+	int collate_only = 0;
+	int do_exec = 0;
 
-	changed = files[0]; /* default */
+	leading_edge = files[0]; /* default */
 	if (restart_mode)
-		run_script(argv);
+		run_utility(argv);
 
 main:
-	if (reopen_only == 1)
+	if ((reopen_only == 1) || (collate_only == 1))
 		nev = xkevent(kq, NULL, 0, evList, 32, &evTimeout);
 	else
 		nev = xkevent(kq, NULL, 0, evList, 32, NULL);
-	if (nev == -2) /* test runner */
+	/* escape for test runner */
+	if ((nev == -2) && (collate_only == 0))
 		return;
 
 	for (i=0; i<nev; i++) {
@@ -414,9 +426,13 @@ main:
 		#endif
 		if (evList[i].filter != EVFILT_VNODE)
 			continue;
+		if ((i == 0) && (reopen_only == 0) && (collate_only == 0)) {
+			file = (WatchFile *)evList[i].udata;
+			leading_edge = file;
+		}
 	}
 
-	/* reopen all files that were removed */
+	collate_only = 0;
 	for (i=0; i<nev; i++) {
 		file = (WatchFile *)evList[i].udata;
 		if (evList[i].fflags & NOTE_DELETE ||
@@ -428,32 +444,34 @@ main:
 			if ((file->fd != -1) && (close(file->fd) == -1))
 				err(1, "unable to close file");
 			watch_file(kq, file);
+			collate_only = 1;
 		}
 	}
 	if (reopen_only == 1) {
 		reopen_only = 0;
 		goto main;
 	}
-	/* respond to all events */
+
 	for (i=0; i<nev && reopen_only == 0; i++) {
-		file = (WatchFile *)evList[i].udata;
-		changed = file;
 		if (evList[i].fflags & NOTE_DELETE ||
 		    evList[i].fflags & NOTE_WRITE  ||
 		    evList[i].fflags & NOTE_EXTEND ||
 		    evList[i].fflags & NOTE_RENAME) {
-			if (fifo.fd == 0) {
-				run_script(argv);
-				/* don't process any more events */
-				i=nev;
-				reopen_only = 1;
-			}
+			if (fifo.fd == 0)
+				do_exec = 1;
 			else {
 				write(fifo.fd, file->fn, strlen(file->fn));
 				write(fifo.fd, "\n", 1);
 				fsync(fifo.fd);
 			}
 		}
+	}
+	if (collate_only == 1)
+		goto main;
+	if (do_exec == 1) {
+		do_exec = 0;
+		run_utility(argv);
+		reopen_only = 1;
 	}
 	goto main;
 }
