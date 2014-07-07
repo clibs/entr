@@ -1,0 +1,133 @@
+.\"
+.\" Copyright (c) 2012 Eric Radman <ericshane@eradman.com>
+.\"
+.\" Permission to use, copy, modify, and distribute this software for any
+.\" purpose with or without fee is hereby granted, provided that the above
+.\" copyright notice and this permission notice appear in all copies.
+.\"
+.\" THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+.\" WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+.\" MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+.\" ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+.\" WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+.\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+.\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+.\"
+.Dd May 14, 2014
+.Dt ENTR 1
+.Os
+.Sh NAME
+.Nm entr
+.Nd run arbitrary commands when files change
+.Sh SYNOPSIS
+.Nm
+.Op Fl cdr
+.Ar utility
+.Op Ar argument ...
+.Op Ar /_
+.Nm entr
+.Ar +fifo
+.Sh DESCRIPTION
+.Ss EXEC Mode
+.Nm entr
+has two modes of operation; the first reads a list of files provided on the
+standard input and executes the supplied
+.Ar utility
+if any of them change.
+.Nm
+waits for the child process to finish before responding to subsequent file
+system events.
+A TTY is also opened before entering the watch loop in order to support
+interactive utilities.
+.Pp
+The arguments are as follows:
+.Bl -tag -width Ds
+.It Fl c
+Execute
+.Pa /usr/bin/clear
+before invoking the
+.Ar utility
+specified on the command line.
+.It Fl d
+Track the directories of regular files provided as input and exit if a new file
+is added.
+This option also enables directories to be specified explicitly.
+Files with names beginning with
+.Ql \&.
+are ignored.
+.It Fl r
+Launch the
+.Ar utility
+at startup and reload it by sending
+.Dv SIGTERM
+if one of the source files change.
+.Nm
+waits for the
+.Ar utility
+to exit to ensure that resources such as sockets have been closed.
+.El
+.Pp
+The first occurrence of
+.Ar /_
+on the command line will be replaced with the absolute path of the first file that was modified.
+If the restart option is used the first file under watch is treated as the default.
+.Ss FIFO Mode
+The second mode also reads a list of filenames provided on the standard input
+and is enabled by specifying
+.Ql +
+and the name of a fifo.
+In this mode
+.Nm
+enables more sophisticated scripting by writing filenames to a named pipe when
+they are modified.
+.Sh ENVIRONMENT
+If
+.Ev PAGER
+is undefined,
+.Nm entr
+will assign
+.Pa /bin/cat
+to prevent interactive utilities from waiting for
+keyboard input if output does not fit on the screen.
+.Sh EXIT STATUS
+The
+.Nm
+utility exits with one of the following values:
+.Pp
+.Bl -tag -width Ds -offset indent -compact
+.It Li 0
+.Dv SIGINT
+or
+.Dv SIGTERM
+was received
+.It Li 1
+No regular files were provided as input or an error occurred
+.It Li 2
+A file was added to a directory while using the while using the directory watch
+option
+.El
+.Sh EXAMPLES
+Rebuild a project if source files change, showing only the first 20 lines of
+output
+.Pp
+.Dl $ find src/ | entr sh -c 'make | head -n 20'
+.Pp
+Launch and auto-reload a node.js server:
+.Pp
+.Dl $ ls *.js | entr -r node app.js
+.Pp
+Clear the screen and run a query:
+.Pp
+.Dl $ echo my.sql | entr -c psql -f /_
+.Pp
+Rebuild project if a source file is modified or added to the src/ directory:
+.Pp
+.Dl $ while sleep 1; do ls src/*.rb | entr -d rake; done
+.Pp
+Convert individual Markdown files to HTML if they're modified:
+.Bd -literal -offset indent
+$ ls *.md | entr +notify &
+$ while read F; do
+>     markdown2html $F
+> done < notify
+.Ed

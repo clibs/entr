@@ -1,0 +1,30 @@
+#!/bin/sh
+
+copy_mk()
+{
+    cmd="cp $1/Makefile.$2 Makefile"
+    echo "$cmd"; $cmd
+}
+
+case `uname` in
+    Darwin)       copy_mk .         macos ;;
+    Linux)        copy_mk .         linux ;;
+    GNU/kFreeBSD) copy_mk ./contrib kfreebsd ;;
+    *)            copy_mk .         bsd ;;
+esac
+
+[ $# = 0 ] && exit 0
+
+cat <<HELP
+Adjust build options by setting the following environment variables:
+
+`make env`
+
+Example: build a static binary and install to your home directory
+
+./configure
+CFLAGS="-static" make test
+PREFIX=\$HOME/local make install
+
+HELP
+exit 2
