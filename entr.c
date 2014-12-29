@@ -73,6 +73,7 @@ WatchFile *leading_edge;
 int restart_opt;
 int clear_opt;
 int dirwatch_opt;
+int exit_opt;
 int child_pid;
 
 /* forwards */
@@ -84,7 +85,7 @@ static int process_input(FILE *, WatchFile *[], int);
 static int set_fifo(char *[]);
 static int set_options(char *[]);
 static int list_dir(char *);
-static void run_utility(char *[]);
+static void run_utility(int kq, char *[]);
 static void watch_file(int, WatchFile *);
 static int compare_dir_contents(WatchFile *);
 static void watch_loop(int, char *[]);
@@ -180,11 +181,33 @@ main(int argc, char *argv[]) {
 void
 usage() {
 	extern char *__progname;
-	fprintf(stderr, "usage: %s [-dr] [-c] utility [args, [/_], ...] < filenames\n",
+	fprintf(stderr, "usage: %s [-cdrx] utility [args, [/_], ...] < filenames\n",
 	    __progname);
 	fprintf(stderr, "       %s +fifo < filenames\n",
 	    __progname);
 	exit(1);
+}
+
+void report_child(pid_t pid, int status) {
+    if (pid == child_pid)
+        child_pid = 0;
+    if (!exit_opt)
+        return;
+    if(WIFEXITED(status))
+        fprintf(stderr, "** child %d exited with %d\n", pid, WEXITSTATUS(status));
+    if(WIFSIGNALED(status))
+        fprintf(stderr, "** child %d signalled with %d\n", pid, WTERMSIG(status));
+}
+
+void
+wait_child() {
+    pid_t pid = child_pid;
+    int status;
+    if (!pid)
+        return;
+    if (xwaitpid(pid, &status, 0) < 0)
+        return;
+    report_child(pid, status);
 }
 
 void
@@ -197,7 +220,7 @@ terminate_utility() {
 		    child_pid);
 		#endif
 		xkill(child_pid, SIGTERM);
-		xwaitpid(child_pid, &status, 0);
+		wait_child(child_pid);
 		child_pid = 0;
 	}
 }
@@ -211,6 +234,8 @@ handle_exit(int sig) {
 		close(fifo.fd);
 		unlink(fifo.fn);
 	}
+        /* Disable status report, no stdio is allowed in sig handlers */
+        exit_opt = 0;
 	terminate_utility();
 	exit(0);
 }
@@ -313,7 +338,7 @@ set_options(char *argv[]) {
 
 	/* read arguments until we reach a command */
 	for (argc=1; argv[argc] != 0 && argv[argc][0] == '-'; argc++);
-	while ((ch = getopt(argc, argv, "cdr")) != -1) {
+	while ((ch = getopt(argc, argv, "cdrx")) != -1) {
 		switch (ch) {
 		case 'c':
 			clear_opt = 1;
@@ -323,6 +348,9 @@ set_options(char *argv[]) {
 			break;
 		case 'r':
 			restart_opt = 1;
+			break;
+		case 'x':
+			exit_opt = 1;
 			break;
 		default:
 			usage();
@@ -339,7 +367,7 @@ set_options(char *argv[]) {
  * then send the child process SIGTERM and restart it.
  */
 void
-run_utility(char *argv[]) {
+run_utility(int kq, char *argv[]) {
 	int pid;
 	int i, m;
 	int ret, status;
@@ -388,7 +416,19 @@ run_utility(char *argv[]) {
 	child_pid = pid;
 
 	if (restart_opt == 0)
-		xwaitpid(pid, &status, 0);
+		wait_child();
+	else {
+		struct kevent ev;
+		EV_SET(&ev,
+		    child_pid, /* ident */
+		    EVFILT_PROC,  /* filter */
+		    EV_ADD|EV_ONESHOT, /* flags */
+		    NOTE_EXIT|NOTE_EXITSTATUS, /* filter-specific flags */
+		    0, /* extra data */
+		    0); /* user data */
+		if (xkevent(kq, &ev, 1, NULL, 0, NULL) == -1)
+			err(1, "failed to add PROC event");
+	}
 
 	xfree(arg_buf);
 	xfree(new_argv);
@@ -468,7 +508,7 @@ watch_loop(int kq, char *argv[]) {
 
 	leading_edge = files[0]; /* default */
 	if (restart_opt)
-		run_utility(argv);
+		run_utility(kq, argv);
 
 main:
 	if ((reopen_only == 1) || (collate_only == 1))
@@ -493,6 +533,8 @@ main:
 		    evList[i].data,
 		    evList[i].udata);
 		#endif
+                if (evList[i].filter == EVFILT_PROC)
+                    report_child(evList[i].ident, evList[i].data);
 		if (evList[i].filter != EVFILT_VNODE)
 			continue;
 		file = (WatchFile *)evList[i].udata;
@@ -504,6 +546,8 @@ main:
 
 	collate_only = 0;
 	for (i=0; i<nev; i++) {
+		if (evList[i].filter != EVFILT_VNODE)
+			continue;
 		file = (WatchFile *)evList[i].udata;
 		if (evList[i].fflags & NOTE_DELETE ||
 		    evList[i].fflags & NOTE_RENAME) {
@@ -523,6 +567,8 @@ main:
 	}
 
 	for (i=0; i<nev && reopen_only == 0; i++) {
+		if (evList[i].filter != EVFILT_VNODE)
+			continue;
 		file = (WatchFile *)evList[i].udata;
 		if ((file->is_dir == 1) && (dir_modified == 0))
 			continue;
@@ -548,7 +594,7 @@ main:
 		goto main;
 	if (do_exec == 1) {
 		do_exec = 0;
-		run_utility(argv);
+		run_utility(kq, argv);
 		reopen_only = 1;
 	}
 	if (dir_modified > 0)
