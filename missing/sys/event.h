@@ -28,6 +28,7 @@
 #include <sys/time.h>
 
 #define EVFILT_VNODE		(-4)	/* attached to vnodes */
+#define EVFILT_PROC		(-5)	/* attached to struct proc */
 
 /* actions */
 #define EV_ADD		0x0001		/* add event to kq (implies enable) */
@@ -50,6 +51,12 @@
 #define	NOTE_RENAME	0x0020			/* vnode was renamed */
 #define	NOTE_REVOKE	0x0040			/* vnode access was revoked */
 #define	NOTE_TRUNCATE   0x0080			/* vnode was truncated */
+
+/*
+ * data/hint fflags for EVFILT_PROC, shared with userspace
+ */
+#define NOTE_EXIT       0x80000000      /* process exited */
+#define NOTE_EXITSTATUS 0x04000000      /* exit status to be returned */
 
 #define EV_SET(kevp, a, b, c, d, e, f) do {	\
 	(kevp)->ident = (a);			\

@@ -15,10 +15,14 @@
 
 #include <sys/inotify.h>
 #include <sys/event.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
+#include <assert.h>
 #include <errno.h>
 #include <limits.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -62,6 +66,11 @@ kqueue(void) {
 	return inotify_init();
 }
 
+static void
+handle_sigchld() {
+	/* Interrupt ppoll */
+}
+
 /*
  * Emulate kqueue(2). Only the flags used in entr.c are considered
  * Returns the number of eventlist structs filled by this call
@@ -79,12 +88,40 @@ kevent(int kq, const struct kevent *changelist, int nchanges, struct
 	u_int fflags;
 	const struct kevent *kev;
 	int ignored;
+	sigset_t sigmask;
 	struct pollfd pfd;
+	int pret;
+	struct timespec polldelay = {
+	    .tv_sec = 0, .tv_nsec = 50 /* ms */ * 1000000
+	};
 
+	if (sigprocmask(SIG_SETMASK, NULL, &sigmask) || sigdelset(&sigmask, SIGCHLD))
+	    err(1, "failed to build sigmask");
+
+	/* BSD kevent() allows changes to be applied and to wait for events in a
+	 * single call, but entr doesn't need this, so do one or the other.
+	 */
 	if (nchanges > 0) {
 		ignored = 0;
 		for (n=0; n<nchanges; n++) {
 			kev = changelist + (sizeof(struct kevent)*n);
+
+			if (kev->filter == EVFILT_PROC) {
+				struct sigaction act;
+				sigset_t sset;
+				assert(kev->flags == (EV_ADD|EV_ONESHOT));
+				assert(kev->fflags == (NOTE_EXIT|NOTE_EXITSTATUS));
+				if (sigprocmask(SIG_SETMASK, NULL, &sset) ||
+					    sigaddset(&sset, SIGCHLD) ||
+					    sigprocmask(SIG_SETMASK, &sset, NULL))
+					err(1, "failed to mask SIGCHILD");
+				act.sa_flags = 0;
+				act.sa_handler = handle_sigchld;
+				if (sigemptyset(&act.sa_mask) || sigaction(SIGCHLD, &act, NULL))
+					err(1, "failed to set CHILD handler");
+				continue;
+			}
+
 			file = (WatchFile *)kev->udata;
 			if (kev->flags & EV_DELETE) {
 				inotify_rm_watch(kq /* ifd */, kev->ident);
@@ -101,15 +138,37 @@ kevent(int kq, const struct kevent *changelist, int nchanges, struct
 			else
 				ignored++;
 		}
-		return nchanges - ignored;
+		return 0;
 	}
 
 	pfd.fd = kq;
 	pfd.events = POLLIN;
-	if (timeout != 0 && (poll(&pfd, 1, timeout->tv_nsec/1000000) == 0))
-		return 0;
-
 	n = 0;
+	do {
+		if (((pret = ppoll(&pfd, 1, timeout, &sigmask)) == 0)) {
+			fprintf(stderr,"ppoll timed out, return\n");
+			return 0;
+		}
+
+		while (n < nevents) {
+			int status;
+			pid_t pid;
+			if ((pid = waitpid(-1, &status, WNOHANG)) < 1)
+				break;
+			eventlist[n].ident = pid;
+			eventlist[n].filter = EVFILT_PROC;
+			eventlist[n].flags = 0;
+			eventlist[n].fflags = NOTE_EXIT|NOTE_EXITSTATUS;
+			eventlist[n].data = status;
+			eventlist[n].udata = NULL;
+			n++;
+		}
+
+		if (n > 0)
+			return n;
+
+	} while(pret < 0);
+
 	do {
 		pos = 0;
 		len = read(kq /* ifd */, &buf, EVENT_BUF_LEN);
