@@ -126,7 +126,7 @@ main(int argc, char *argv[]) {
 	argv_index = set_options(argv);
 
 	/* normally a user will exit this utility by do_execting Ctrl-C */
-	act.sa_flags = 0;
+	act.sa_flags = SA_RESETHAND;
 	act.sa_handler = handle_exit;
 	if (sigemptyset(&act.sa_mask) & (sigaction(SIGINT, &act, NULL) != 0))
 		err(1, "Failed to set SIGINT handler");
@@ -229,7 +229,6 @@ terminate_utility() {
 
 void
 handle_exit(int sig) {
-	/*signal(sig, SIG_DFL);*/
 	if (fifo.fd) {
 		close(fifo.fd);
 		unlink(fifo.fn);
@@ -237,7 +236,7 @@ handle_exit(int sig) {
         /* Disable status report, no stdio is allowed in sig handlers */
         exit_opt = 0;
 	terminate_utility();
-	exit(0);
+	raise(sig);
 }
 
 /*
