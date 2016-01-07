@@ -1,15 +1,50 @@
+= Next Release: 3.5
+
+ - Removed contrib/*
+
 = Release History
+
+== 3.4: December 12, 2015
+
+ - Terminate the child process before exiting when the reload option is combined
+   with the directory watch option
+ - Direct users to http://entrproject.org/limits.html if the maximum number of
+   open files is exceeded
+
+== 3.3: October 23, 2015
+
+ - Substitute '/_' only with regular files when using the directory watch option
+ - Bugfix when tracking the first file to change
+ - Display release number along with usage
+
+
+== 3.2: April 9, 2015
+
+ - Execute the utility immediately after registering watch events. Old behavior
+   is restored using new postpone option ('-p')
+ - Relocated 'reload-browser' to http://entrproject.org/scripts/reload-browser
+ - Drop FIFO support to further simply code and documentation. FIFO mode was
+   conceptually good, but EXEC mode is intelligent hand easily handles the vast
+   majority of use cases.
+ - Remove kFreeBSD as a target platform
+
+== 3.1: March 4, 2015
+
+ - Return error code indicating exit reason after handling signals
+ - Restart mode sets process group to ensure that wrapper scripts do not prevent
+   signals from reaching child processes
+ - Removed DEBUG printf statements
 
 == 3.0: December 19, 2014
 
-- Man page highlights the flexibility of executing a commands using a shell
-- 'reload-browser', a cross-platform script for reloading the current tab in
-  one or more browsers
-- system_test.sh auto-upgrades to bash if the default shell does not support the
-  ERR trap
-- Workaround implemented for Linux using fstat(2) to detect if a binary was
-  removed if inotify issues IN_ATTRIB but not IN_DELETE_SELF
-- Use calloc(3) to take advantage of overflow detection
+ - Man page highlights the flexibility of executing a commands using a shell
+ - 'reload-browser', a cross-platform script for reloading the current tab in
+   one or more browsers
+ - system_test.sh auto-upgrades to bash if the default shell does not support
+   the ERR trap
+ - Workaround implemented for Linux using fstat(2) to detect if a binary was
+   removed if inotify issues IN_ATTRIB but not IN_DELETE_SELF
+ - Use calloc(3) to take advantage of overflow detection
 
 == 2.9: June 10, 2014
 
@@ -43,8 +78,7 @@
  - Changed function pointer prefixes from '_' to 'x' to avoid runtime symbol
    collisions in libc. Required to build on DragonFlyBSD
  - Added this NEWS file to provide detailed release history for port maintainers
- - Using the argument '/_' on the command line is now replaced with the first
-   file that changed
+ - Subsitute '/_' argument with the first file that changed
  - Man page formatted with more semantically correct markup
  - Multiple events on the same file are merged on Linux to prevent duplicate
    writes to a named pipe

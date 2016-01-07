@@ -51,13 +51,12 @@
 
 int (*test_runner_main)(int, char**);
 int (*xstat)(const char *, struct stat *);
-int (*xkill)(pid_t, int);
+int (*xkillpg)(pid_t, int);
 int (*xexecvp)(const char *, char *const []);
 pid_t (*xwaitpid)(pid_t, int *, int);
 pid_t (*xfork)();
 int (*xkevent)(int, const struct kevent *, int, struct kevent *, int , const
     struct timespec *);
-int (*xmkfifo)(const char *path, mode_t mode);
 int (*xopen)(const char *path, int flags, ...);
 char * (*xrealpath)(const char *, char *);
 void (*xfree)(void *);
@@ -68,12 +67,13 @@ int (*xlist_dir)(char *);
 
 extern int optind;
 extern WatchFile **files;
-WatchFile fifo;
 WatchFile *leading_edge;
-int restart_opt;
+int child_pid;
+
 int clear_opt;
 int dirwatch_opt;
-int child_pid;
+int restart_opt;
+int postpone_opt;
 
 /* forwards */
 
@@ -81,7 +81,6 @@ static void usage();
 static void terminate_utility();
 static void handle_exit(int sig);
 static int process_input(FILE *, WatchFile *[], int);
-static int set_fifo(char *[]);
 static int set_options(char *[]);
 static int list_dir(char *);
 static void run_utility(char *[]);
@@ -109,11 +108,10 @@ main(int argc, char *argv[]) {
 	/* set up pointers to real functions */
 	xstat = stat;
 	xkevent = kevent;
-	xkill = kill;
+	xkillpg = killpg;
 	xexecvp = execvp;
 	xwaitpid = waitpid;
 	xfork = fork;
-	xmkfifo = mkfifo;
 	xopen = open;
 	xrealpath = realpath;
 	xfree = free;
@@ -126,6 +124,7 @@ main(int argc, char *argv[]) {
 
 	/* normally a user will exit this utility by do_execting Ctrl-C */
 	act.sa_flags = 0;
+	act.sa_flags = SA_RESETHAND;
 	act.sa_handler = handle_exit;
 	if (sigemptyset(&act.sa_mask) & (sigaction(SIGINT, &act, NULL) != 0))
 		err(1, "Failed to set SIGINT handler");
@@ -142,7 +141,7 @@ main(int argc, char *argv[]) {
 	setenv("PAGER", "/bin/cat", 0);
 
 	/* sequential scan may depend on a 0 at the end */
-	files = calloc(rl.rlim_cur+1, sizeof(char *));
+	files = calloc(rl.rlim_cur+1, sizeof(WatchFile *));
 
 	if ((kq = kqueue()) == -1)
 		err(1, "cannot create kqueue");
@@ -153,21 +152,18 @@ main(int argc, char *argv[]) {
 		errx(1, "No regular files to watch");
 	if (n_files == -1)
 		errx(1, "Too many files listed; the hard limit for your login"
-		    " class is %d", (int)rl.rlim_cur);
+		    " class is %d. Please consult"
+		    " http://entrproject.org/limits.html", (int)rl.rlim_cur);
 	for (i=0; i<n_files; i++)
 		watch_file(kq, files[i]);
 
-	/* FIFO mode will block until reader connects */
-	if (set_fifo(argv+argv_index));
-	else {
-		/* Attempt to open a tty so that editors don't complain */
-		if ((ttyfd = xopen(_PATH_TTY, O_RDONLY)) == -1)
-			warn("can't open %s", _PATH_TTY);
-		if (ttyfd > STDIN_FILENO) {
-			if (dup2(ttyfd, STDIN_FILENO) != 0)
-				warn("can't dup2 to stdin");
-			close(ttyfd);
-		}
+	/* Attempt to open a tty so that editors don't complain */
+	if ((ttyfd = xopen(_PATH_TTY, O_RDONLY)) == -1)
+		warn("can't open %s", _PATH_TTY);
+	if (ttyfd > STDIN_FILENO) {
+		if (dup2(ttyfd, STDIN_FILENO) != 0)
+			warn("can't dup2 to stdin");
+		close(ttyfd);
 	}
 
 	watch_loop(kq, argv+argv_index);
@@ -179,9 +175,8 @@ main(int argc, char *argv[]) {
 void
 usage() {
 	extern char *__progname;
-	fprintf(stderr, "usage: %s [-dr] [-c] utility [args, [/_], ...] < filenames\n",
-	    __progname);
-	fprintf(stderr, "       %s +fifo < filenames\n",
+	fprintf(stderr, "release: %s\n", RELEASE);
+	fprintf(stderr, "usage: %s [-cdpr] utility [args, [/_], ...] < filenames\n",
 	    __progname);
 	exit(1);
 }
@@ -191,11 +186,7 @@ terminate_utility() {
 	int status;
 
 	if (child_pid > 0) {
-		#ifdef DEBUG
-		fprintf(stderr, "signal %d sent to pid %d\n", SIGTERM,
-		    child_pid);
-		#endif
-		xkill(child_pid, SIGTERM);
+		xkillpg(child_pid, SIGTERM);
 		xwaitpid(child_pid, &status, 0);
 		child_pid = 0;
 	}
@@ -205,13 +196,8 @@ terminate_utility() {
 
 void
 handle_exit(int sig) {
-	/*signal(sig, SIG_DFL);*/
-	if (fifo.fd) {
-		close(fifo.fd);
-		unlink(fifo.fn);
-	}
 	terminate_utility();
-	exit(0);
+	raise(sig);
 }
 
 /*
@@ -267,26 +253,6 @@ process_input(FILE *file, WatchFile *files[], int max_files) {
 	return n_files;
 }
 
-/*
- * Determine if the user is specifying FIFO mode by supplying a pathname
- * prefixed with '+' and set the global mode flag accordingly
- */
-int
-set_fifo(char *argv[]) {
-	if (argv[0][0] == (int)'+') {
-		strlcpy(fifo.fn, argv[0]+1, MEMBER_SIZE(WatchFile, fn));
-		if (xmkfifo(fifo.fn, S_IRUSR| S_IWUSR) == -1)
-			err(1, "mkfifo '%s' failed", fifo.fn);
-		if ((fifo.fd = xopen(fifo.fn, O_WRONLY, 0)) == -1)
-			err(1, "open fifo '%s' failed", fifo.fn);
-		return 1;
-	}
-
-	memset(&fifo, 0, sizeof(fifo));
-	return 0;
-}
-
-
 int list_dir(char *dir) {
 	struct dirent *dp;
 	DIR *dfd = opendir(dir);
@@ -312,13 +278,16 @@ set_options(char *argv[]) {
 
 	/* read arguments until we reach a command */
 	for (argc=1; argv[argc] != 0 && argv[argc][0] == '-'; argc++);
-	while ((ch = getopt(argc, argv, "cdr")) != -1) {
+	while ((ch = getopt(argc, argv, "cdpr")) != -1) {
 		switch (ch) {
 		case 'c':
 			clear_opt = 1;
 			break;
 		case 'd':
 			dirwatch_opt = 1;
+			break;
+		case 'p':
+			postpone_opt = 1;
 			break;
 		case 'r':
 			restart_opt = 1;
@@ -373,7 +342,10 @@ run_utility(char *argv[]) {
 
 	if (pid == 0) {
 		if (clear_opt == 1)
-			system("/usr/bin/clear");
+			(void) system("/usr/bin/clear");
+		/* Set process group so subprocess can be signaled */
+		if (restart_opt == 1)
+			setpgid(0, getpid());
 		/* wait up to 1 seconds for each file to become available */
 		for (i=0; i < 10; i++) {
 			ret = xexecvp(new_argv[0], new_argv);
@@ -438,8 +410,7 @@ compare_dir_contents(WatchFile *file) {
 }
 
 /*
- * Wait for events to and execute a command or write filename to a FIFO.
- * Four major concerns are in play here:
+ * Wait for events to and execute a command. Four major concerns are in play:
  *   leading_edge: Global reference to the first file to have changed
  *   reopen_only : Unlink or rename events which require us to spin while
  *                 waiting for the file to reappear. These must always be
@@ -463,9 +434,10 @@ watch_loop(int kq, char *argv[]) {
 	int collate_only = 0;
 	int do_exec = 0;
 	int dir_modified = 0;
+	int leading_edge_set = 0;
 
 	leading_edge = files[0]; /* default */
-	if (restart_opt)
+	if (postpone_opt == 0)
 		run_utility(argv);
 
 main:
@@ -480,24 +452,16 @@ main:
 		return;
 
 	for (i=0; i<nev; i++) {
-		#ifdef DEBUG
-		fprintf(stderr, "event %d/%d: ident %d filter %d flags 0x%x "
-		    "fflags 0x%x udata %d udata %p\n", i+1,
-		    nev,
-		    evList[i].ident,
-		    evList[i].filter,
-		    evList[i].flags,
-		    evList[i].fflags,
-		    evList[i].data,
-		    evList[i].udata);
-		#endif
 		if (evList[i].filter != EVFILT_VNODE)
 			continue;
 		file = (WatchFile *)evList[i].udata;
 		if (file->is_dir == 1)
 			dir_modified += compare_dir_contents(file);
-		if ((i == 0) && (reopen_only == 0) && (collate_only == 0))
-			leading_edge = file;
+		else if (leading_edge_set == 0)
+			if ((reopen_only == 0) && (collate_only == 0)) {
+				leading_edge = file;
+				leading_edge_set = 1;
+			}
 	}
 
 	collate_only = 0;
@@ -528,17 +492,9 @@ main:
 		    evList[i].fflags & NOTE_WRITE  ||
 		    evList[i].fflags & NOTE_RENAME ||
 		    evList[i].fflags & NOTE_TRUNCATE) {
-			if (fifo.fd == 0) {
-				if ((dir_modified > 0) && (restart_opt == 1))
-					continue;
-				do_exec = 1;
-			}
-			else {
-				write(fifo.fd, file->fn, strlen(file->fn));
-				write(fifo.fd, "\n", 1);
-				fsync(fifo.fd);
-				reopen_only = 1;
-			}
+			if ((dir_modified > 0) && (restart_opt == 1))
+				continue;
+			do_exec = 1;
 		}
 	}
 
@@ -548,9 +504,12 @@ main:
 		do_exec = 0;
 		run_utility(argv);
 		reopen_only = 1;
+		leading_edge_set = 0;
 	}
-	if (dir_modified > 0)
+	if (dir_modified > 0) {
+		terminate_utility();
 		xerrx(2, "directory altered");
+	}
 
 	goto main;
 }

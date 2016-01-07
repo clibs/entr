@@ -1,29 +1,35 @@
 PREFIX ?= /usr/local
 MANPREFIX ?= ${PREFIX}/man
+RELEASE = 3.5
+CPPFLAGS += -DRELEASE=\"${RELEASE}\"
 
-all: entr
+all: versioncheck entr
+
+env:
+	@echo "CC         = ${CC}"
+	@echo "DESTDIR    = ${DESTDIR}"
+	@echo "EXTRA_SRC  = ${EXTRA_SRC}"
+	@echo "LDFLAGS    = ${LDFLAGS}"
+	@echo "MANPREFIX  = ${MANPREFIX}"
+	@echo "PREFIX     = ${PREFIX}"
+	@echo "SRC        = ${SRC}"
 
 test: entr_spec entr
-	@/bin/echo "Running unit tests"
+	@echo "Running unit tests"
 	@./entr_spec
 
 gcc-lint: clean
-	@CFLAGS="-std=c89 -pedantic -Wall -Wpointer-arith -Wbad-function-cast" make test
+	@CPPFLAGS="-std=c89 -pedantic -Wall -Wpointer-arith -Wbad-function-cast" make test
 
 regress:
-	@/bin/echo -n "Running functional tests"
-	@./regress.sh
-
-debug: entr_spec
-	gdb -q entr_spec
+	@echo "Running functional tests"
+	@./system_test.sh
 
 entr: entr.c ${EXTRA_SRC}
 	${CC} ${CFLAGS} ${CPPFLAGS} ${EXTRA_SRC} entr.c -o $@ ${LDFLAGS}
-	@chmod +x $@
 
 entr_spec: entr_spec.c entr.c ${EXTRA_SRC}
 	${CC} ${CFLAGS} ${CPPFLAGS} ${EXTRA_SRC} entr_spec.c -o $@ ${LDFLAGS}
-	@chmod +x $@
 
 clean:
 	rm -f entr entr_spec *.o
@@ -35,21 +41,13 @@ install: entr
 	@mkdir -p ${DESTDIR}${PREFIX}/bin
 	@mkdir -p ${DESTDIR}${MANPREFIX}/man1
 	install entr ${DESTDIR}${PREFIX}/bin
-	install scripts/reload-browser ${DESTDIR}${PREFIX}/bin
 	install -m 644 entr.1 ${DESTDIR}${MANPREFIX}/man1
 
 uninstall:
 	rm ${DESTDIR}${PREFIX}/bin/entr
-	rm ${DESTDIR}${PREFIX}/bin/reload-browser
 	rm ${DESTDIR}${MANPREFIX}/man1/entr.1
 
-env:
-	@echo "CC         = ${CC}"
-	@echo "DESTDIR    = ${DESTDIR}"
-	@echo "EXTRA_SRC  = ${EXTRA_SRC}"
-	@echo "LDFLAGS    = ${LDFLAGS}"
-	@echo "MANPREFIX  = ${MANPREFIX}"
-	@echo "PREFIX     = ${PREFIX}"
-	@echo "SRC        = ${SRC}"
+versioncheck:
+	@head -n3 NEWS | egrep -q "^= Next Release: ${RELEASE}|^== ${RELEASE}: "
 
-.PHONY: clean distclean install uninstall env
+.PHONY: all env test gcc-lint clean distclean install uninstall versioncheck

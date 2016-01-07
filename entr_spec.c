@@ -40,6 +40,10 @@ struct {
 		int count;
 	} signal;
 	struct {
+		int pid;
+		int count;
+	} wait;
+	struct {
 		int fd;
 		const char *path;
 	} open;
@@ -73,10 +77,10 @@ void reset_state() {
 	optind = 1;
 
 	/* initialize global data */
-	memset(&fifo, 0, sizeof(fifo));
-	restart_opt = 0;
 	clear_opt = 0;
 	dirwatch_opt = 0;
+	postpone_opt = 0;
+	restart_opt = 0;
 	leading_edge = 0;
 	files = calloc(max_files, sizeof(WatchFile *));
 	for (i=0; i<max_files; i++)
@@ -105,6 +109,8 @@ fake_stat(const char *path, struct stat *sb) {
 
 pid_t
 fake_waitpid(pid_t wpid, int *status, int options) {
+	ctx.wait.pid = wpid;
+	ctx.wait.count++;
 	return wpid;
 }
 
@@ -121,12 +127,7 @@ fake_list_dir(char *path) {
 
 pid_t
 fake_fork() {
-	return 0; /* pretend to be the child */
-}
-
-int
-fake_mkfifo(const char *path, mode_t mode) {
-	return 0; /* success */
+	return child_pid; /* pretend to be the child */
 }
 
 void
@@ -166,7 +167,7 @@ fake_kevent(int kq, const struct kevent *changelist, int nchanges, struct
 /* spies */
 
 int
-fake_kill(pid_t pid, int sig) {
+fake_killpg(pid_t pid, int sig) {
 	ctx.signal.pid = pid;
 	ctx.signal.sig = sig;
 	ctx.signal.count++;
@@ -266,6 +267,7 @@ int watch_fd_exec_01() {
 	int kq = kqueue();
 	static char *argv[] = { "prog", "arg1", "arg2", NULL };
 
+	postpone_opt = 1;
 	strlcpy(files[0]->fn, "arg1", sizeof(files[0]->fn));
 	watch_file(kq, files[0]);
 
@@ -311,6 +313,7 @@ int watch_fd_exec_02() {
 	int kq = kqueue();
 	static char *argv[] = { "prog", "arg1", "arg2", NULL };
 
+	postpone_opt = 1;
 	strlcpy(files[0]->fn, "main.py", sizeof(files[0]->fn));
 	watch_file(kq, files[0]);
 
@@ -339,6 +342,7 @@ int watch_fd_exec_03() {
 	int kq = kqueue();
 	static char *argv[] = { "prog", "arg1", "arg2", NULL };
 
+	postpone_opt = 1;
 	strlcpy(files[0]->fn, "main.py", sizeof(files[0]->fn));
 	watch_file(kq, files[0]);
 	strlcpy(files[1]->fn, "util.py", sizeof(files[1]->fn));
@@ -379,6 +383,7 @@ int watch_fd_exec_04() {
 	int kq = kqueue();
 	static char *argv[] = { "prog", "arg1", "arg2", NULL };
 
+	postpone_opt = 1;
 	strlcpy(files[0]->fn, "arg1", sizeof(files[0]->fn));
 	watch_file(kq, files[0]);
 
@@ -424,6 +429,7 @@ int watch_fd_exec_05() {
 	int kq = kqueue();
 	static char *argv[] = { "prog", "arg1", "arg2", NULL };
 
+	postpone_opt = 1;
 	strlcpy(files[0]->fn, "arg1", sizeof(files[0]->fn));
 	watch_file(kq, files[0]);
 
@@ -462,12 +468,13 @@ int watch_fd_exec_05() {
 }
 
 /*
- * Add a file to a directory
+ * Add a file to a directory and wait for child to exit
  */
 int watch_fd_exec_06() {
 	int kq = kqueue();
 	static char *argv[] = { "prog", "arg1", "arg2", NULL };
 
+	postpone_opt = 1;
 	strlcpy(files[0]->fn, ".", sizeof(files[0]->fn));
 	files[0]->is_dir = 1;
 	files[0]->file_count = 1;
@@ -475,7 +482,9 @@ int watch_fd_exec_06() {
 	watch_file(kq, files[0]);
 	watch_file(kq, files[1]);
 
+	child_pid = 222;
 	dirwatch_opt = 1;
+	restart_opt = 1;
 	ctx.event.nlist = 1;
 	EV_SET(&ctx.event.List[0], files[0]->fd, EVFILT_VNODE, 0, NOTE_WRITE, 0, files[0]);
 
@@ -494,12 +503,9 @@ int watch_fd_exec_06() {
 	ok(ctx.event.Set[1].fflags == (NOTE_ALL));
 	ok(ctx.event.Set[1].udata == files[1]->fn);
 
-	ok(ctx.exec.count == 1);
-	ok(ctx.exec.file != 0);
-	ok(strcmp(ctx.exec.file, "prog") == 0);
-	ok(strcmp(ctx.exec.argv[0], "prog") == 0);
-	ok(strcmp(ctx.exec.argv[1], "arg1") == 0);
-	ok(strcmp(ctx.exec.argv[2], "arg2") == 0);
+	ok(ctx.exec.count == 0);
+	ok(ctx.wait.count == 1);
+	ok(ctx.wait.pid == 222);
 	ok(ctx.exit.count == 1);
 	return 0;
 }
@@ -511,6 +517,7 @@ int watch_fd_exec_07() {
 	int kq = kqueue();
 	static char *argv[] = { "prog", "arg1", "arg2", NULL };
 
+	postpone_opt = 1;
 	strlcpy(files[0]->fn, ".", sizeof(files[0]->fn));
 	files[0]->is_dir = 1;
 	strlcpy(files[1]->fn, "run.sh", sizeof(files[0]->fn));
@@ -548,15 +555,31 @@ int watch_fd_exec_07() {
 }
 
 /*
- * FIFO mode; triggerd by a leading '+' on the filename
+ * Write to a file in directory watch mode
  */
-int set_fifo_01() {
-	static char *argv[] = { "entr", "+notify", NULL };
+int watch_fd_exec_08() {
+	int kq = kqueue();
+	static char *argv[] = { "prog", "arg1", "arg2", NULL };
 
-	ok(set_fifo(argv+1));
-	ok(ctx.open.fd > 0);
-	ok(strcmp(fifo.fn, "notify") == 0);
-	ok(fifo.fd == ctx.open.fd);
+	postpone_opt = 1;
+	dirwatch_opt = 1;
+	strlcpy(files[0]->fn, "src", sizeof(files[0]->fn));
+	files[0]->is_dir = 1;
+	watch_file(kq, files[0]);
+	strlcpy(files[1]->fn, "main.py", sizeof(files[1]->fn));
+	watch_file(kq, files[1]);
+
+	ctx.event.nlist = 2;
+	EV_SET(&ctx.event.List[0], files[0]->fd, EVFILT_VNODE, 0, NOTE_WRITE, 0, files[0]);
+	EV_SET(&ctx.event.List[1], files[1]->fd, EVFILT_VNODE, 0, NOTE_WRITE, 0, files[1]);
+
+	watch_loop(kq, argv);
+
+	ok(ctx.event.nset == 2);
+	ok(ctx.exec.count == 1);
+	ok(ctx.exec.file != 0);
+	ok(ctx.exit.count == 1);
+	ok(strcmp(leading_edge->fn, "main.py") == 0);
 
 	return 0;
 }
@@ -590,6 +613,7 @@ int set_options_02() {
 	ok(restart_opt == 1);
 	ok(clear_opt == 0);
 	ok(dirwatch_opt == 0);
+	ok(postpone_opt == 0);
 	return 0;
 }
 
@@ -606,6 +630,7 @@ int set_options_03() {
 	ok(restart_opt == 0);
 	ok(clear_opt == 1);
 	ok(dirwatch_opt == 0);
+	ok(postpone_opt == 0);
 	return 0;
 }
 
@@ -622,6 +647,7 @@ int set_options_04() {
 	ok(restart_opt == 0);
 	ok(clear_opt == 0);
 	ok(dirwatch_opt == 1);
+	ok(postpone_opt == 0);
 	return 0;
 }
 
@@ -766,11 +792,10 @@ int test_main(int argc, char *argv[]) {
 	/* set up pointers to test doubles */
 	xstat = fake_stat;
 	xkevent = fake_kevent;
-	xkill = fake_kill;
+	xkillpg = fake_killpg;
 	xwaitpid = fake_waitpid;
 	xexecvp = fake_execvp;
 	xfork = fake_fork;
-	xmkfifo = fake_mkfifo;
 	xopen = fake_open;
 	xrealpath = fake_realpath;
 	xfree = fake_free;
@@ -788,7 +813,7 @@ int test_main(int argc, char *argv[]) {
 	run(watch_fd_exec_05);
 	run(watch_fd_exec_06);
 	run(watch_fd_exec_07);
-	run(set_fifo_01);
+	run(watch_fd_exec_08);
 	run(set_options_01);
 	run(set_options_02);
 	run(set_options_03);

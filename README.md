@@ -2,12 +2,9 @@ Event Notify Test Runner
 ========================
 
 A utility for running arbitrary commands when files change. Uses
-[kqueue(2)][kqueue_2] or [inotify(7)][inotify_7] to avoid polling. `entr`
-responds to file system events by executing command line arguments or by writing
-to a FIFO.
-
-`entr` was written to make rapid feedback and automated testing natural and
-completely ordinary.
+[kqueue(2)][kqueue_2] or [inotify(7)][inotify_7] to avoid polling.  `entr` was
+written to make rapid feedback and automated testing natural and completely
+ordinary.
 
 Installation - BSD, Mac OS, and Linux
 -------------------------------------
@@ -36,7 +33,7 @@ Installation - Debian
 Examples from `man entr`
 ------------------------
 
-Rebuild a project if source files change, limiting output to the first 20 lines
+Rebuild a project if source files change, limiting output to the first 20 lines:
 
     $ find src/ | entr sh -c 'make | head -n 20'
 
@@ -44,20 +41,13 @@ Launch and auto-reload a node.js server:
 
     $ ls *.js | entr -r node app.js
 
-Clear the screen and run a query:
+Clear the screen and run a query after the SQL script is updated:
 
-    $ echo my.sql | entr -c psql -f /_
+    $ echo my.sql | entr -p psql -f /_
 
 Rebuild project if a source file is modified or added to the src/ directory:
 
     $ while sleep 1; do ls src/*.rb | entr -d rake; done
-
-Convert individual Markdown files to HTML if they're modified:
-
-    $ ls *.md | entr +notify &
-    $ while read F; do
-    >     markdown2html $F
-    > done < notify
 
 News
 ----
