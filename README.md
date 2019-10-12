@@ -1,4 +1,6 @@
-**WARNING:** This is a (possibly outdated and/or unmaintained) fork of https://bitbucket.org/eradman/entr. If you want to install entr, go to the [the original repository](https://bitbucket.org/eradman/entr) to get the latest release. Likewise, to file an issue or a pull request, head over to the [the original repository](https://bitbucket.org/eradman/entr).
+**WARNING:** This is a unmaintained fork of https://github.com/eradman/entr. To get the latest release, file an issue or a pull request, head over to the [the original repository](https://github.com/eradman/entr).
+
+---
 
 Event Notify Test Runner
 ========================
