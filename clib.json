@@ -4,6 +4,6 @@
   "repo": "clibs/entr",
   "description": "A utility for running arbitrary commands when files change",
   "keywords": ["watch", "make", "entr", "fs", "file"],
-  "install": "./configure && make test install"
+  "install": "./configure && make test && sudo make install"
 }
 
