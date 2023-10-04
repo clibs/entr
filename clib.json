@@ -1,6 +1,6 @@
 {
   "name": "entr",
-  "version": "5.0.0",
+  "version": "5.4",
   "repo": "clibs/entr",
   "description": "A utility for running arbitrary commands when files change",
   "keywords": ["watch", "make", "entr", "fs", "file"],
